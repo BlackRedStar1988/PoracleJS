@@ -1,7 +1,7 @@
-// const pokemonGif = require('pokemon-gif')
 const geoTz = require('geo-tz')
 const moment = require('moment-timezone')
-const { S2 } = require('s2-geometry')
+const replaceAsync = require('../util/stringReplaceAsync')
+const urlShortener = require('../lib/urlShortener')
 const Controller = require('./controller')
 require('moment-precise-range-plugin')
 
@@ -24,11 +24,12 @@ class Monster extends Controller {
 		if (data.pvpEvoLookup) pvpQueryString = `great_league_ranking>=${data.pvp_bestGreatLeagueRank} and great_league_ranking_min_cp<=${data.pvp_bestGreatLeagueRankCP} and ultra_league_ranking>=${data.pvp_bestUltraLeagueRank} and ultra_league_ranking_min_cp<=${data.pvp_bestUltraLeagueRankCP}`
 		let query = `
 		select humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, monsters.template, monsters.distance, monsters.clean, monsters.ping, monsters.great_league_ranking, monsters.ultra_league_ranking from monsters
-		join humans on humans.id = monsters.id
-		where humans.enabled = true and
+		join humans on (humans.id = monsters.id and humans.current_profile_no = monsters.profile_no)
+		where humans.enabled = true and humans.admin_disable = false and
 		(${pokemonQueryString}) and
 		min_iv<=${data.iv} and
 		max_iv>=${data.iv} and
+		min_time<=${data.tthSeconds} and
 		min_cp<=${data.cp} and
 		max_cp>=${data.cp} and
 		(gender = ${data.gender} or gender = 0) and
@@ -64,15 +65,15 @@ class Monster extends Controller {
 						monsters.distance = 0 and (${areastring})
 					)
 				)
-				group by humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, monsters.template, monsters.distance, monsters.clean, monsters.ping, monsters.great_league_ranking, monsters.ultra_league_ranking
 				`)
+			//				group by humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, monsters.template, monsters.distance, monsters.clean, monsters.ping, monsters.great_league_ranking, monsters.ultra_league_ranking
 		} else {
 			query = query.concat(`
 					and ((monsters.distance = 0 and (${areastring})) or monsters.distance > 0)
-					group by humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, monsters.template, monsters.distance, monsters.clean, monsters.ping, monsters.great_league_ranking, monsters.ultra_league_ranking
 					`)
+			//					group by humans.id, humans.name, humans.type, humans.language, humans.latitude, humans.longitude, monsters.template, monsters.distance, monsters.clean, monsters.ping, monsters.great_league_ranking, monsters.ultra_league_ranking
 		}
-		this.log.silly(`${data.encounter_id}: Query ${query}`)
+		// this.log.silly(`${data.encounter_id}: Query ${query}`)
 
 		let result = await this.db.raw(query)
 
@@ -101,7 +102,6 @@ class Monster extends Controller {
 			let hrstart = process.hrtime()
 			const logReference = data.encounter_id
 
-			moment.locale(this.config.locale.timeformat)
 			const minTth = this.config.general.alertMinimumTime || 0
 
 			switch (this.config.geocoding.staticProvider.toLowerCase()) {
@@ -133,66 +133,14 @@ class Monster extends Controller {
 				return
 			}
 
-			const weatherCellKey = S2.latLngToKey(data.latitude, data.longitude, 10)
-			const weatherCellId = S2.keyToId(weatherCellKey)
-			const nowTimestamp = Math.floor(Date.now() / 1000)
-			const currentHourTimestamp = nowTimestamp - (nowTimestamp % 3600)
-			const previousHourTimestamp = currentHourTimestamp - 3600
-			const nextHourTimestamp = currentHourTimestamp + 3600
-			if (!(weatherCellId in this.weatherController.controllerData)) {
-				this.weatherController.controllerData[weatherCellId] = {}
-			}
-			const weatherCellData = this.weatherController.controllerData[weatherCellId]
-			let currentCellWeather = null
+			const weatherCellId = this.weatherData.getWeatherCellId(data.latitude, data.longitude)
 
-			if (nowTimestamp > (currentHourTimestamp + 30) && (this.config.weather.weatherChangeAlert || this.config.weather.enableWeatherForecast) && data.weather) {
-				if (!weatherCellData.weatherFromBoost) weatherCellData.weatherFromBoost = [0, 0, 0, 0, 0, 0, 0, 0]
-				if (!weatherCellData.lastCurrentWeatherCheck) weatherCellData.lastCurrentWeatherCheck = previousHourTimestamp
-				if (data.weather == weatherCellData[currentHourTimestamp] && weatherCellData.lastCurrentWeatherCheck >= currentHourTimestamp) {
-					weatherCellData.weatherFromBoost = [0, 0, 0, 0, 0, 0, 0, 0]
-				}
-				if (data.weather !== weatherCellData[currentHourTimestamp] || data.weather == weatherCellData[currentHourTimestamp] && weatherCellData.lastCurrentWeatherCheck < currentHourTimestamp) {
-					weatherCellData.weatherFromBoost = weatherCellData.weatherFromBoost.map((value, index) => { if (index == data.weather) return value += 1; return value -= 1 })
-					if (weatherCellData.weatherFromBoost.filter((x) => x > 4).length) {
-						if (weatherCellData.weatherFromBoost.indexOf(5) == -1) weatherCellData.weatherFromBoost = [0, 0, 0, 0, 0, 0, 0, 0]
-						this.log.info(`${data.encounter_id}: Boosted Pokémon! Force update of weather in cell ${weatherCellId} with weather ${data.weather}`)
-						if (data.weather != weatherCellData[currentHourTimestamp]) weatherCellData.forecastTimeout = null
-						weatherCellData[currentHourTimestamp] = data.weather
-						currentCellWeather = data.weather
-						// Delete old weather information
-						Object.entries(weatherCellData).forEach(([timestamp]) => {
-							if (timestamp < (currentHourTimestamp - 3600)) {
-								delete weatherCellData[timestamp]
-							}
-						})
-						// Remove users not caring about anything anymore
-						if (weatherCellData.cares) weatherCellData.cares = weatherCellData.cares.filter((caring) => caring.caresUntil > nowTimestamp)
-						if (!weatherCellData.cares || !weatherCellData[previousHourTimestamp] || weatherCellData[previousHourTimestamp] && currentCellWeather == weatherCellData[previousHourTimestamp]) weatherCellData.lastCurrentWeatherCheck = currentHourTimestamp
-					}
-				}
+			if (data.weather) {
+				this.weatherData.checkWeatherOnMonster(weatherCellId, data.latitude, data.longitude, data.weather)
 			}
 
-			let weatherChangeAlertJobs = []
-			if (this.config.weather.weatherChangeAlert && weatherCellData.cares && weatherCellData.lastCurrentWeatherCheck < currentHourTimestamp && weatherCellData[previousHourTimestamp] > 0 && currentCellWeather > 0 && weatherCellData[previousHourTimestamp] != currentCellWeather) {
-				const weatherDataPayload = {
-					longitude: data.longitude,
-					latitude: data.latitude,
-					s2_cell_id: weatherCellId,
-					gameplay_condition: data.weather,
-					updated: nowTimestamp,
-					source: 'fromMonster',
-				}
-				weatherChangeAlertJobs = await this.weatherController.handle(weatherDataPayload) || null
-			}
-
-			if (this.config.weather.weatherChangeAlert && this.config.weather.showAlteredPokemon && weatherCellData.cares) {
-				// delete despawned
-				for (const cares of weatherCellData.cares) {
-					if ('caredPokemons' in cares) cares.caredPokemons = cares.caredPokemons.filter((pokemon) => pokemon.disappear_time > nowTimestamp)
-				}
-			}
-
-			if (!currentCellWeather && weatherCellData.lastCurrentWeatherCheck >= currentHourTimestamp) currentCellWeather = weatherCellData[currentHourTimestamp]
+			// Get current cell weather from cache
+			const currentCellWeather = this.weatherData.getCurrentWeatherInCell(weatherCellId)
 
 			const encountered = !(!(['string', 'number'].includes(typeof data.individual_attack) && (+data.individual_attack + 1))
 				|| !(['string', 'number'].includes(typeof data.individual_defense) && (+data.individual_defense + 1))
@@ -230,6 +178,7 @@ class Monster extends Controller {
 			data.wazeMapUrl = `https://www.waze.com/ul?ll=${data.latitude},${data.longitude}&navigate=yes&zoom=17`
 			data.color = this.GameData.utilData.types[monster.types[0].name].color
 			data.ivColor = this.findIvColor(data.iv)
+			data.tthSeconds = data.disappear_time - Date.now() / 1000
 			data.tth = moment.preciseDiff(Date.now(), data.disappear_time * 1000, true)
 			data.disappearTime = moment(data.disappear_time * 1000).tz(geoTz(data.latitude, data.longitude).toString()).format(this.config.locale.time)
 			data.confirmedTime = data.disappear_time_verified
@@ -325,7 +274,7 @@ class Monster extends Controller {
 			}
 
 			// Stop handling if it already disappeared or is about to go away
-			if ((data.tth.firstDateWasLater || ((data.tth.hours * 3600) + (data.tth.minutes * 60) + data.tth.seconds) < minTth) && !weatherChangeAlertJobs[0]) {
+			if ((data.tth.firstDateWasLater || data.tthSeconds < minTth)) {
 				this.log.verbose(`${data.encounter_id}: ${monster.name} already disappeared or is about to go away in: ${data.tth.hours}:${data.tth.minutes}:${data.tth.seconds}`)
 				return []
 			}
@@ -362,9 +311,9 @@ class Monster extends Controller {
 				this.log.verbose(`${data.encounter_id}: ${monster.name} appeared in areas (${data.matched}) and ${whoCares.length} humans cared. (${hrendms} ms)`)
 			}
 
-			if (!whoCares[0] && !weatherChangeAlertJobs[0]) return []
+			if (!whoCares.length) return []
 
-			if (whoCares[0] && whoCares.length > 1 && this.config.pvp.pvpEvolutionDirectTracking) {
+			if (whoCares.length > 1 && this.config.pvp.pvpEvolutionDirectTracking) {
 				const whoCaresNoDuplicates = whoCares.filter((v, i, a) => a.findIndex((t) => (t.id === v.id)) === i)
 				whoCares.length = 0
 				whoCares.push(...whoCaresNoDuplicates)
@@ -373,22 +322,32 @@ class Monster extends Controller {
 			hrstart = process.hrtime()
 			let discordCacheBad = true // assume the worst
 			whoCares.forEach((cares) => {
-				const { count } = this.getDiscordCache(cares.id)
-				if (count <= this.config.discord.limitAmount + 1) discordCacheBad = false // but if anyone cares and has not exceeded cache, go on
+				if (!this.isRateLimited(cares.id)) discordCacheBad = false
 			})
 
-			if (discordCacheBad && !weatherChangeAlertJobs[0]) return []
+			if (discordCacheBad) {
+				whoCares.forEach((cares) => {
+					this.log.verbose(`${logReference}: Not creating monster alert (Rate limit) for ${cares.type} ${cares.id} ${cares.name} Time to release: ${this.getRateLimitTimeToRelease(cares.id)}`)
+				})
+
+				return []
+			}
+
 			const geoResult = await this.getAddress({ lat: data.latitude, lon: data.longitude })
 			const jobs = []
 
-			if (pregenerateTile) {
-				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL('monster', data)
+			if (pregenerateTile && this.config.geocoding.staticMapType.pokemon) {
+				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL(logReference, 'monster', data, this.config.geocoding.staticMapType.pokemon)
 				this.log.debug(`${logReference}: Tile generated ${data.staticMap}`)
 			}
 			data.staticmap = data.staticMap // deprecated
 
+			// get Weather Forecast information
+
+			const { nextHourTimestamp } = this.weatherData.getWeatherTimes()
 			if (this.config.weather.enableWeatherForecast && data.disappear_time > nextHourTimestamp) {
-				const weatherForecast = await this.weatherController.getWeather({ lat: +data.latitude, lon: +data.longitude, disappear: data.disappear_time })
+				const weatherForecast = await this.weatherData.getWeatherForecast(weatherCellId)
+
 				let pokemonShouldBeBoosted = false
 				if (weatherForecast.current > 0 && this.GameData.utilData.weatherTypeBoost[weatherForecast.current].filter((boostedType) => data.types.includes(boostedType)).length > 0) pokemonShouldBeBoosted = true
 				if (weatherForecast.next > 0 && ((data.weather > 0 && weatherForecast.next !== data.weather) || (weatherForecast.current > 0 && weatherForecast.next !== weatherForecast.current) || (pokemonShouldBeBoosted && data.weather == 0))) {
@@ -410,45 +369,44 @@ class Monster extends Controller {
 			for (const cares of whoCares) {
 				this.log.debug(`${logReference}: Creating monster alert for ${cares.id} ${cares.name} ${cares.type} ${cares.language} ${cares.template}`, cares)
 
-				const caresCache = this.getDiscordCache(cares.id).count
+				const rateLimitTtr = this.getRateLimitTimeToRelease(cares.id)
+				if (rateLimitTtr) {
+					this.log.verbose(`${logReference}: Not creating monster alert (Rate limit) for ${cares.type} ${cares.id} ${cares.name} Time to release: ${rateLimitTtr}`)
+					// eslint-disable-next-line no-continue
+					continue
+				}
+				this.log.verbose(`${logReference}: Creating monster alert for ${cares.type} ${cares.id} ${cares.name} ${cares.language} ${cares.template}`)
 
-				if (this.config.weather.weatherChangeAlert && weatherCellData) {
-					if (weatherCellData.cares) {
-						let exists = false
-						for (const caring of weatherCellData.cares) {
-							if (caring.id === cares.id) {
-								if (caring.caresUntil < data.disappear_time) {
-									caring.caresUntil = data.disappear_time
-								}
-								caring.clean = cares.clean
-								caring.ping = cares.ping
-								caring.language = cares.language
-								caring.template = cares.template
-								exists = true
-								break
-							}
-						}
-						if (!exists) {
-							weatherCellData.cares.push({
-								id: cares.id, name: cares.name, type: cares.type, clean: cares.clean, ping: cares.ping, caresUntil: data.disappear_time, template: cares.template, language: cares.language,
-							})
-						}
-					} else {
-						weatherCellData.cares = []
-						weatherCellData.cares.push({
-							id: cares.id, name: cares.name, type: cares.type, clean: cares.clean, ping: cares.ping, caresUntil: data.disappear_time, template: cares.template, language: cares.language,
-						})
-					}
-					if (this.config.weather.showAlteredPokemon && encountered) {
-						for (const caring of weatherCellData.cares) {
-							if (caring.id === cares.id) {
-								if (!caring.caredPokemons) caring.caredPokemons = []
-								caring.caredPokemons.push({
-									pokemon_id: data.pokemon_id, form: data.form, name: monster.name, formName: monster.form.name, iv: data.iv, cp: data.cp, latitude: data.latitude, longitude: data.longitude, disappear_time: data.disappear_time, alteringWeathers: data.alteringWeathers,
-								})
-							}
-						}
-					}
+				if (this.config.weather.weatherChangeAlert) {
+					// Emit event so we can tell weather controller (different worker) about the pokemon being monitored
+
+					this.emit('userCares', {
+						target: {
+							id: cares.id,
+							name: cares.name,
+							type: cares.type,
+							clean: cares.clean,
+							ping: cares.ping,
+							template: cares.template,
+							language: cares.language,
+						},
+						weatherCellId,
+						caresUntil: data.disappear_time,
+						pokemon: encountered
+							? {
+								pokemon_id: data.pokemon_id,
+								form: data.form,
+								name: monster.name,
+								formName: monster.form.name,
+								iv: data.iv,
+								cp: data.cp,
+								latitude: data.latitude,
+								longitude: data.longitude,
+								disappear_time: data.disappear_time,
+								alteringWeathers: data.alteringWeathers,
+							} : null,
+
+					})
 				}
 
 				const language = cares.language || this.config.general.locale
@@ -456,7 +414,10 @@ class Monster extends Controller {
 
 				data.name = translator.translate(monster.name)
 				data.formName = translator.translate(monster.form.name)
-				data.genderData = { name: translator.translate(data.genderDataEng.name), emoji: translator.translate(data.genderDataEng.emoji) }
+				data.genderData = {
+					name: translator.translate(data.genderDataEng.name),
+					emoji: translator.translate(data.genderDataEng.emoji),
+				}
 				data.quickMoveName = data.weight && this.GameData.moves[data.quickMoveId] ? translator.translate(this.GameData.moves[data.quickMoveId].name) : ''
 				data.quickMoveEmoji = this.GameData.moves[data.quickMoveId] && this.GameData.utilData.types[this.GameData.moves[data.quickMoveId].type] ? translator.translate(this.GameData.utilData.types[this.GameData.moves[data.quickMoveId].type].emoji) : ''
 				data.chargeMoveName = data.weight && this.GameData.moves[data.chargeMoveId] ? translator.translate(this.GameData.moves[data.chargeMoveId].name) : ''
@@ -530,6 +491,10 @@ class Monster extends Controller {
 						// eslint-disable-next-line no-continue
 						continue
 					}
+
+					mustacheResult = await replaceAsync(mustacheResult, /<S<(.*?)>S>/g,
+						async (match, name) => urlShortener(name))
+
 					try {
 						message = JSON.parse(mustacheResult)
 					} catch (err) {
@@ -549,26 +514,22 @@ class Monster extends Controller {
 					const work = {
 						lat: data.latitude.toString().substring(0, 8),
 						lon: data.longitude.toString().substring(0, 8),
-						message: caresCache === this.config.discord.limitAmount + 1 ? { content: translator.translateFormat('You have reached the limit of {0} messages over {1} seconds', this.config.discord.limitAmount, this.config.discord.limitSec) } : message,
+						message,
 						target: cares.id,
 						type: cares.type,
 						name: cares.name,
 						tth: data.tth,
 						clean: cares.clean,
-						emoji: caresCache === this.config.discord.limitAmount + 1 ? [] : data.emoji,
+						emoji: data.emoji,
 						logReference,
+						language,
 					}
-					if (caresCache <= this.config.discord.limitAmount + 1) {
-						jobs.push(work)
-						this.addDiscordCache(cares.id)
-					}
+					jobs.push(work)
 				}
 			}
 			hrend = process.hrtime(hrstart)
 			const hrendprocessing = hrend[1] / 1000000
 			this.log.debug(`${data.encounter_id}: ${monster.name} appeared and ${whoCares.length} humans cared [end]. (${hrendms} ms sql ${hrendprocessing} ms processing dts)`)
-
-			if (weatherChangeAlertJobs[0]) weatherChangeAlertJobs.forEach((weatherJob) => jobs.push(weatherJob))
 
 			return jobs
 		} catch (e) {

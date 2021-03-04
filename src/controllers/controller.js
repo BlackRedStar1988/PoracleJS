@@ -2,21 +2,22 @@ const inside = require('point-in-polygon')
 const path = require('path')
 const NodeGeocoder = require('node-geocoder')
 const cp = require('child_process')
+const EventEmitter = require('events')
 
 const pcache = require('flat-cache')
 
 const geoCache = pcache.load('geoCache', path.resolve(`${__dirname}../../../.cache/`))
 const emojiFlags = require('emoji-flags')
 
-const logs = require('../lib/logger')
 const TileserverPregen = require('../lib/tileserverPregen')
 
-class Controller {
-	constructor(db, config, dts, geofence, GameData, discordCache, translatorFactory, mustache, weatherController, weatherCacheData) {
+class Controller extends EventEmitter {
+	constructor(log, db, config, dts, geofence, GameData, discordCache, translatorFactory, mustache, weatherData) {
+		super()
 		this.db = db
 		this.cp = cp
 		this.config = config
-		this.log = logs.controller
+		this.log = log
 		this.dts = dts
 		this.geofence = geofence
 		this.GameData = GameData
@@ -25,9 +26,9 @@ class Controller {
 		this.translator = translatorFactory ? this.translatorFactory.default : null
 		this.mustache = mustache
 		this.earthRadius = 6371 * 1000 // m
-		this.weatherController = weatherController
-		this.controllerData = weatherCacheData || {}
-		this.tileserverPregen = new TileserverPregen()
+		this.weatherData = weatherData
+		//		this.controllerData = weatherCacheData || {}
+		this.tileserverPregen = new TileserverPregen(this.config, this.log)
 		this.dtsCache = {}
 	}
 
@@ -139,25 +140,14 @@ class Controller {
 		return Math.ceil(d)
 	}
 
-	getDiscordCache(id) {
-		let ch = this.discordCache.get(id)
-		if (ch === undefined) {
-			this.discordCache.set(id, { count: 1 })
-			ch = { count: 1 }
-		}
-		return ch
+	isRateLimited(id) {
+		return !!this.discordCache.get(id)
 	}
 
-	addDiscordCache(id) {
-		let ch = this.discordCache.get(id)
-		if (ch === undefined) {
-			this.discordCache.set(id, { count: 1 })
-			ch = { count: 1 }
-		}
-		const ttl = this.discordCache.getTtl(id)
-		const newTtl = Math.floor((ttl - Date.now()) / 1000)
-		if (newTtl > 0) this.discordCache.set(id, { count: ch.count + 1 }, newTtl)
-		return true
+	getRateLimitTimeToRelease(id) {
+		const ttl = this.discordCache.get(id)
+		if (!ttl) return 0
+		return Math.max((ttl - Date.now()) / 1000, 0)
 	}
 
 	async geolocate(locationString) {
@@ -176,7 +166,7 @@ class Controller {
 	// eslint-disable-next-line class-methods-use-this
 	escapeJsonString(s) {
 		if (!s) return s
-		return s.replace(/"/g, '\'\'').replace(/\n/g, ' ')
+		return s.replace(/"/g, '\'\'').replace(/\n/g, ' ').replace(/\\/g, '?')
 	}
 
 	escapeAddress(a) {
@@ -243,6 +233,14 @@ class Controller {
 		}
 	}
 
+	async selectAllNotQuery(table, conditions) {
+		try {
+			return await this.db.select('*').from(table).whereNot(conditions)
+		} catch (err) {
+			throw { source: 'selectAllNotQuery', error: err }
+		}
+	}
+
 	async updateQuery(table, values, conditions) {
 		try {
 			return this.db(table).update(values).where(conditions)
@@ -279,7 +277,7 @@ class Controller {
 
 	async deleteWhereInQuery(table, id, values, valuesColumn) {
 		try {
-			return this.db.whereIn(valuesColumn, values).where({ id }).from(table).del()
+			return this.db.whereIn(valuesColumn, values).where(typeof id === 'object' ? id : { id }).from(table).del()
 		} catch (err) {
 			throw { source: 'deleteWhereInQuery unhappy', error: err }
 		}
@@ -302,12 +300,13 @@ class Controller {
 			default: {
 				const constraints = {
 					humans: 'id',
-					monsters: 'monsters.id, monsters.pokemon_id, monsters.min_iv, monsters.max_iv, monsters.min_level, monsters.max_level, monsters.atk, monsters.def, monsters.sta, monsters.form, monsters.gender, monsters.min_weight, monsters.great_league_ranking, monsters.great_league_ranking_min_cp, monsters.ultra_league_ranking, monsters.ultra_league_ranking_min_cp',
-					raid: 'raid.id, raid.pokemon_id, raid.exclusive, raid.level, raid.team',
-					egg: 'egg.id, egg.team, egg.exclusive, egg.level',
-					quest: 'quest.id, quest.reward_type, quest.reward',
-					invasion: 'invasion.id, invasion.gender, invasion.grunt_type',
-					weather: 'weather.id, weather.condition, weather.cell',
+					monsters: 'monsters.id, monsters.profile_no, monsters.pokemon_id, monsters.min_iv, monsters.max_iv, monsters.min_level, monsters.max_level, monsters.atk, monsters.def, monsters.sta, monsters.form, monsters.gender, monsters.min_weight, monsters.great_league_ranking, monsters.great_league_ranking_min_cp, monsters.ultra_league_ranking, monsters.ultra_league_ranking_min_cp, monsters.min_time',
+					raid: 'raid.id, raid.profile_no, raid.pokemon_id, raid.exclusive, raid.level, raid.team',
+					egg: 'egg.id, egg.profile_no, egg.team, egg.exclusive, egg.level',
+					quest: 'quest.id, quest.profile_no, quest.reward_type, quest.reward',
+					invasion: 'invasion.id, invasion.profile_no, invasion.gender, invasion.grunt_type',
+					lures: 'lures.id, lures.profile_no, lures.lure_id',
+					weather: 'weather.id, weather.profile_no, weather.condition, weather.cell',
 				}
 
 				for (const val of values) {

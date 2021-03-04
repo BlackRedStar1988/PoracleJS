@@ -1,6 +1,7 @@
 const importFresh = require('import-fresh')
 const path = require('path')
 const Knex = require('knex')
+const moment = require('moment-timezone')
 const TranslatorFactory = require('../util/translatorFactory')
 const dtsLoader = require('./dtsloader')
 const configChecker = require('./configChecker')
@@ -35,7 +36,7 @@ function getKnex(conf) {
 			return Knex({
 				client: 'mysql2',
 				connection: conf.database.conn,
-				pool: { min: 2, max: 10 },
+				pool: { min: 2, max: conf.tuning.maxDatabaseConnections },
 			})
 		}
 
@@ -43,38 +44,44 @@ function getKnex(conf) {
 			return Knex({
 				client: 'pg',
 				connection: conf.database.conn,
-				pool: { min: 2, max: 10 },
+				pool: { min: 2, max: conf.tuning.maxDatabaseConnections },
 			})
 		}
 		default: {
-			return Knex({
-				client: 'sqlite3',
-				useNullAsDefault: true,
-				connection: {
-					filename: path.join(__dirname, './db/poracle.sqlite'),
-				},
-			})
+			throw new Error('Sqlite is no longer supported, move to MYSQL or get latest which worked: git checkout 4350c45bf63ce1bc6c341f3a0b921238b106f1d6 - come to discord for help')
+
+			// return Knex({
+			// 	client: 'sqlite3',
+			// 	useNullAsDefault: true,
+			// 	connection: {
+			// 		filename: path.join(__dirname, './db/poracle.sqlite'),
+			// 	},
+			// })
 		}
 	}
 }
 
 module.exports = {
-	Config: () => {
+	Config: (performChecks = true) => {
 		config = importFresh('config')
 		dts = dtsLoader.readDtsFiles()
 		geofence = importFresh(path.join(__dirname, `../../${config.geofence.path}`))
 		if (geofence.type === 'FeatureCollection') geofence = getGeofenceFromGEOjson(path.join(__dirname, `../../${config.geofence.path}`))
 		knex = getKnex(config)
+		translatorFactory = new TranslatorFactory(config)
+		translator = translatorFactory.default
+
+		if (performChecks) {
 		knex.migrate.latest({
 			directory: path.join(__dirname, './db/migrations'),
 			tableName: 'migrations',
 		})
-		translatorFactory = new TranslatorFactory(config)
-		translator = translatorFactory.default
+			configChecker.checkConfig(config)
+			configChecker.checkDts(dts, config)
+			configChecker.checkGeofence(geofence)
+		}
 
-		configChecker.checkConfig(config)
-		configChecker.checkDts(dts, config)
-		configChecker.checkGeofence(geofence)
+		moment.locale(config.locale.timeformat)
 		return {
 			config, knex, dts, geofence, translator, translatorFactory,
 		}
