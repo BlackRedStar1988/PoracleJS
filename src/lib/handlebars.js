@@ -1,5 +1,6 @@
 const handlebars = require('handlebars')
 const config = require('config')
+const moreHandlebars = require('./more-handlebars')
 const monsters = require('../util/monsters')
 const {
 	cpMultipliers, types, powerUpCost,
@@ -23,22 +24,32 @@ function translatorAlt() {
 }
 
 module.exports = () => {
-	handlebars.registerHelper('numberFormat', (value, decimals = 2) => {
+	moreHandlebars.registerHelpers(handlebars)
+
+	handlebars.registerHelper('numberFormat', (value, decimals) => {
+		if (!['string', 'number'].includes(typeof decimals)) decimals = 2 // We may have the handlebars options in the parameter
+
 		if (Number.isNaN(+value) || Number.isNaN(+decimals)) return value
 		return Number(+value).toFixed(+decimals)
 	})
 
-	handlebars.registerHelper('math', (value, decimals = 2, add = 0, remove = 0, multiply = 1, divide = 1) => {
-		if (Number.isNaN(+value) || Number.isNaN(+decimals) || Number.isNaN(+add) || Number.isNaN(+remove) || Number.isNaN(+multiply) || Number.isNaN(+divide)) return value
-		return Number((+value + +add - +remove) * multiply / divide).toFixed(+decimals)
-	})
+	// Doubt this works or is used
+	// handlebars.registerHelper('math', (value, decimals = 2, add = 0, remove = 0, multiply = 1, divide = 1) => {
+	// 	if (Number.isNaN(+value) || Number.isNaN(+decimals) || Number.isNaN(+add) || Number.isNaN(+remove) || Number.isNaN(+multiply) || Number.isNaN(+divide)) return value
+	// 	return Number((+value + +add - +remove) * multiply / divide).toFixed(+decimals)
+	// })
 
-	handlebars.registerHelper('pad0', (value, padTo = 3) => (value.toString().padStart(padTo, '0')))
+	handlebars.registerHelper('pad0', (value, padTo) => {
+		if (!['string', 'number'].includes(typeof padTo)) padTo = 3 // We may have the handlebars options in the parameter
+		return value.toString().padStart(padTo, '0')
+	})
 
 	handlebars.registerHelper('moveName', (value, options) => (moves[value] ? userTranslator(options).translate(moves[value].name) : ''))
 	handlebars.registerHelper('moveNameAlt', (value) => (moves[value] ? translatorAlt().translate(moves[value].name) : ''))
+	handlebars.registerHelper('moveNameEng', (value) => (moves[value] ? moves[value].name : ''))
 	handlebars.registerHelper('moveType', (value, options) => (moves[value] ? userTranslator(options).translate(moves[value].type) : ''))
 	handlebars.registerHelper('moveTypeAlt', (value) => (moves[value] ? translatorAlt().translate(moves[value].type) : ''))
+	handlebars.registerHelper('moveTypeEng', (value) => (moves[value] ? moves[value].type : ''))
 	handlebars.registerHelper('moveEmoji', (value, options) => {
 		if (!moves[value]) return ''
 		return types[moves[value].type] ? userTranslator(options).translate(types[moves[value].type].emoji) : ''
@@ -46,6 +57,10 @@ module.exports = () => {
 	handlebars.registerHelper('moveEmojiAlt', (value) => {
 		if (!moves[value]) return ''
 		return types[moves[value].type] ? translatorAlt.translate(types[moves[value].type].emoji) : ''
+	})
+	handlebars.registerHelper('moveEmojiEng', (value) => {
+		if (!moves[value]) return ''
+		return types[moves[value].type] ? types[moves[value].type].emoji : ''
 	})
 
 	handlebars.registerHelper('pokemonName', (value, options) => {
@@ -62,6 +77,13 @@ module.exports = () => {
 		return translatorAlt().translate(monster.name)
 	})
 
+	handlebars.registerHelper('pokemonNameEng', (value) => {
+		if (!+value) return ''
+		const monster = Object.values(monsters).find((m) => m.id === +value)
+		if (!monster) return ''
+		return monster.name
+	})
+
 	handlebars.registerHelper('pokemonForm', (value, options) => {
 		if (!+value) return ''
 		const monster = Object.values(monsters).find((m) => m.form.id === +value)
@@ -74,6 +96,13 @@ module.exports = () => {
 		const monster = Object.values(monsters).find((m) => m.form.id === +value)
 		if (!monster) return ''
 		return translatorAlt().translate(monster.form.name)
+	})
+
+	handlebars.registerHelper('pokemonFormEng', (value) => {
+		if (!+value) return ''
+		const monster = Object.values(monsters).find((m) => m.form.id === +value)
+		if (!monster) return ''
+		return monster.form.name
 	})
 
 	handlebars.registerHelper('translateAlt', (value) => {
@@ -95,6 +124,18 @@ module.exports = () => {
               * cpMulti ** 2
               / 10,
 		))
+	})
+
+	handlebars.registerHelper('pokemonBaseStats', (pokemonId, formId) => {
+		if (!['string', 'number'].includes(typeof formId)) formId = 0
+
+		const monster = monsters[`${pokemonId}_${formId}`] ? monsters[`${pokemonId}_${formId}`] : monsters[`${pokemonId}_0`]
+
+		return monster ? monster.stats : {
+			baseAttack: 0,
+			baseDefense: 0,
+			baseStamina: 0,
+		}
 	})
 
 	handlebars.registerHelper('getPowerUpCost', (levelStart, levelEnd, options) => {

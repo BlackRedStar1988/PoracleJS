@@ -1,7 +1,7 @@
-exports.run = async (client, msg, args) => {
+exports.run = async (client, msg, args, options) => {
 	try {
 		// Check target
-		const util = client.createUtil(msg, args)
+		const util = client.createUtil(msg, options)
 
 		const {
 			canContinue, target, language,
@@ -10,17 +10,26 @@ exports.run = async (client, msg, args) => {
 		if (!canContinue) return
 		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
 
+		if (!Object.keys(client.config.general.availableLanguages).length) {
+			return await msg.react('🙅')
+		}
+
 		const translator = client.translatorFactory.Translator(language)
 
 		// Remove arguments that we don't want to keep for processing
-		for (let i = 0; i < args.length; i++) {
+		for (let i = args.length - 1; i >= 0; i--) {
 			if (args[i].match(client.re.nameRe)) args.splice(i, 1)
 			else if (args[i].match(client.re.channelRe)) args.splice(i, 1)
 			else if (args[i].match(client.re.userRe)) args.splice(i, 1)
 		}
 
+		const currentLanguageName = client.GameData.utilData.languageNames[language]
+
 		if (args.length == 0) {
-			return msg.reply(`${translator.translate('Current language is set to')}: ${language}`)
+			await msg.reply(`${translator.translate('Current language is set to')}: ${currentLanguageName || language}`)
+			await msg.reply(translator.translateFormat('Use `{0}language` to set to one of {1}', util.prefix, Object.keys(client.config.general.availableLanguages)),
+				{ style: 'markdown' })
+			return
 		}
 
 		let newLanguage = args[0]

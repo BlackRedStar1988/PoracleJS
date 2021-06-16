@@ -1,6 +1,5 @@
-const { mount } = require('telegraf')
 /* eslint no-param-reassign: ["error", { "props": false }] */
-module.exports = (translatorFactory) => mount(['text', 'location'], (ctx, next) => {
+module.exports = (translatorFactory) => (ctx, next) => {
 	const regex = /^\/([^@\s]+)@?(?:(\S+)|)\s?([\s\S]*)$/i
 	if (!ctx.message) return next()
 
@@ -18,11 +17,23 @@ module.exports = (translatorFactory) => mount(['text', 'location'], (ctx, next) 
 		bot: parts[2],
 		args: parts[3],
 		get splitArgsArray() {
+			if (!parts[3].length) return [[]]
+
 			let args = parts[3].split(/ +/g)
 			args = args.map((arg) => translatorFactory.reverseTranslateCommand(arg.toLowerCase().replace(/_/g, ' '), true).toLowerCase())
 			let initialArgs
 			if (args.includes('|')) {
-				initialArgs = args.join(' ').split('|').map((com) => com.split(' ').filter((a) => a))
+				let currentArg = []
+				initialArgs = []
+				for (const arg of args) {
+					if (arg === '|') {
+						initialArgs.push(currentArg)
+						currentArg = []
+					} else {
+						currentArg.push(arg)
+					}
+				}
+				initialArgs.push(currentArg)
 			} else {
 				initialArgs = [args]
 			}
@@ -33,4 +44,4 @@ module.exports = (translatorFactory) => mount(['text', 'location'], (ctx, next) 
 	}
 	ctx.state.command = command
 	return next()
-})
+}

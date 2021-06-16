@@ -1,15 +1,33 @@
-exports.run = async (client, msg, args) => {
+const helpCommand = require('./help.js')
+const trackedCommand = require('./tracked.js')
+const objectDiff = require('../../objectDiff')
+
+exports.run = async (client, msg, args, options) => {
+	const logReference = Math.random().toString().slice(2, 11)
+
 	try {
-		const util = client.createUtil(msg, args)
+		const util = client.createUtil(msg, options)
 
 		const {
 			canContinue, target, userHasLocation, userHasArea, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
-		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+		const commandName = __filename.slice(__dirname.length + 1, -3)
+		client.log.info(`${logReference} ${target.name}/${target.type}-${target.id}: ${commandName} ${args}`)
+
+		if (args[0] === 'help') {
+			return helpCommand.run(client, msg, [commandName], options)
+		}
 
 		const translator = client.translatorFactory.Translator(language)
+
+		if (args.length === 0) {
+			await msg.reply(translator.translateFormat('Valid commands are e.g. `{0}track charmander`, `{0}track everything iv100`, `{0}track gible d500`', util.prefix),
+				{ style: 'markdown' })
+			await helpCommand.provideSingleLineHelp(client, msg, util, language, target, commandName)
+			return
+		}
 
 		const typeArray = Object.keys(client.GameData.utilData.types).map((o) => o.toLowerCase())
 
@@ -33,6 +51,8 @@ exports.run = async (client, msg, args) => {
 		let gender = 0
 		let weight = 0
 		let maxweight = 9000000
+		let rarity = -1
+		let maxRarity = 6
 		let greatLeague = 4096
 		let greatLeagueCP = 0
 		let ultraLeague = 4096
@@ -69,8 +89,18 @@ exports.run = async (client, msg, args) => {
 			case 'deny':
 			default: {
 				disableEverythingTracking = true
-				forceEverythingSeparately = true
-				individuallyAllowed	= false
+				forceEverythingSeparately = false
+				individuallyAllowed	= true
+			}
+		}
+
+		// Substitute aliases
+		const pokemonAlias = require('../../../../config/pokemonAlias.json')
+		for (let i = args.length - 1; i >= 0; i--) {
+			let alias = pokemonAlias[args[i]]
+			if (alias) {
+				if (!Array.isArray(alias)) alias = [alias]
+				args.splice(i, 1, ...alias.map((x) => x.toString()))
 			}
 		}
 
@@ -121,6 +151,7 @@ exports.run = async (client, msg, args) => {
 			else if (element.match(client.re.maxcpRe)) [,, maxcp] = element.match(client.re.maxcpRe)
 			else if (element.match(client.re.maxivRe)) [,, maxiv] = element.match(client.re.maxivRe)
 			else if (element.match(client.re.maxweightRe)) [,, maxweight] = element.match(client.re.maxweightRe)
+			else if (element.match(client.re.maxRarityRe)) [,, maxRarity] = element.match(client.re.maxRarityRe)
 			else if (element.match(client.re.maxatkRe)) [,, maxAtk] = element.match(client.re.maxatkRe)
 			else if (element.match(client.re.maxdefRe)) [,, maxDef] = element.match(client.re.maxdefRe)
 			else if (element.match(client.re.maxstaRe)) [,, maxSta] = element.match(client.re.maxstaRe)
@@ -132,6 +163,7 @@ exports.run = async (client, msg, args) => {
 			else if (element.match(client.re.staRe)) [,, sta] = element.match(client.re.staRe)
 			else if (element.match(client.re.weightRe)) [,, weight] = element.match(client.re.weightRe)
 			else if (element.match(client.re.tRe)) [,, minTime] = element.match(client.re.tRe)
+			else if (element.match(client.re.rarityRe)) [,, rarity] = element.match(client.re.rarityRe)
 			else if (element.match(client.re.dRe)) [,, distance] = element.match(client.re.dRe)
 			else if (element === 'female') gender = 2
 			else if (element === 'clean') clean = true
@@ -159,13 +191,36 @@ exports.run = async (client, msg, args) => {
 		if (client.config.tracking.defaultDistance !== 0 && distance === 0 && !msg.isFromAdmin) distance = client.config.tracking.defaultDistance
 		if (client.config.tracking.maxDistance !== 0 && distance > client.config.tracking.maxDistance && !msg.isFromAdmin) distance = client.config.tracking.maxDistance
 
+		if (rarity != -1 && !['1', '2', '3', '4', '5', '6'].includes(rarity)) {
+			rarity = client.translatorFactory.reverseTranslateCommand(rarity, true)
+			const rarityLevel = Object.keys(client.GameData.utilData.rarity).find((x) => client.GameData.utilData.rarity[x].toLowerCase() == rarity.toLowerCase())
+			if (rarityLevel) {
+				rarity = rarityLevel
+			} else {
+				rarity = -1
+			}
+		}
+		if (maxRarity != 6 && !['1', '2', '3', '4', '5', '6'].includes(maxRarity)) {
+			maxRarity = client.translatorFactory.reverseTranslateCommand(maxRarity, true)
+			const maxRarityLevel = Object.keys(client.GameData.utilData.rarity).find((x) => client.GameData.utilData.rarity[x].toLowerCase() == maxRarity.toLowerCase())
+			if (maxRarityLevel) {
+				maxRarity = maxRarityLevel
+			} else {
+				maxRarity = 6
+			}
+		}
+
 		if (distance > 0 && !userHasLocation && !target.webhook) {
 			await msg.react(translator.translate('🙅'))
 			return await msg.reply(`${translator.translate('Oops, a distance was set in command but no location is defined for your tracking - check the')} \`${util.prefix}${translator.translate('help')}\``)
 		}
-		if (distance === 0 && !userHasArea && !target.webhook) {
+		if (distance === 0 && !userHasArea && !target.webhook && !msg.isFromAdmin) {
 			await msg.react(translator.translate('🙅'))
 			return await msg.reply(`${translator.translate('Oops, no distance was set in command and no area is defined for your tracking - check the')} \`${util.prefix}${translator.translate('help')}\``)
+		}
+		if (distance === 0 && !userHasArea && !target.webhook && msg.isFromAdmin) {
+			await msg.reply(`${translator.translate('Warning: Admin command detected without distance set - using default distance')} ${client.config.tracking.defaultDistance}`)
+			distance = client.config.tracking.defaultDistance
 		}
 		const insert = monsters.map((mon) => ({
 			id: target.id,
@@ -195,19 +250,76 @@ exports.run = async (client, msg, args) => {
 			great_league_ranking_min_cp: greatLeagueCP,
 			ultra_league_ranking: ultraLeague,
 			ultra_league_ranking_min_cp: ultraLeagueCP,
+			rarity,
+			max_rarity: maxRarity,
 			min_time: minTime,
 		}))
 		if (!insert.length) {
 			return await msg.reply(translator.translate('404 No monsters found'))
 		}
-		const result = await client.query.insertOrUpdateQuery('monsters', insert)
-		reaction = result.length || client.config.database.client === 'sqlite' ? '✅' : reaction
-		client.log.info(`${target.name} started tracking monsters: ${monsters.map((m) => m.name).join(', ')}`)
 
-		// }
+		const tracked = await client.query.selectAllQuery('monsters', { id: target.id, profile_no: currentProfileNo })
+		const updates = []
+		const alreadyPresent = []
 
+		for (let i = insert.length - 1; i >= 0; i--) {
+			const toInsert = insert[i]
+
+			for (const existing of tracked.filter((x) => x.pokemon_id == toInsert.pokemon_id)) {
+				const differences = objectDiff.diff(existing, toInsert)
+
+				switch (Object.keys(differences).length) {
+					case 1:		// No differences (only UID)
+						// No need to insert
+						alreadyPresent.push(toInsert)
+						insert.splice(i, 1)
+						break
+					case 2:		// One difference (something + uid)
+						if (Object.keys(differences).some((x) => ['min_iv', 'distance', 'template', 'clean'].includes(x))) {
+							updates.push({
+								...toInsert,
+								uid: existing.uid,
+							})
+							insert.splice(i, 1)
+						}
+						break
+					default:	// more differences
+						break
+				}
+			}
+		}
+
+		let message = ''
+
+		if ((alreadyPresent.length + updates.length + insert.length) > 50) {
+			message = translator.translateFormat('I have made a lot of changes. See {0}{1} for details', util.prefix, translator.translate('tracked'))
+		} else {
+			alreadyPresent.forEach((monster) => {
+				message = message.concat(translator.translate('Unchanged: '), trackedCommand.monsterRowText(translator, client.GameData, monster), '\n')
+			})
+			updates.forEach((monster) => {
+				message = message.concat(translator.translate('Updated: '), trackedCommand.monsterRowText(translator, client.GameData, monster), '\n')
+			})
+			insert.forEach((monster) => {
+				message = message.concat(translator.translate('New: '), trackedCommand.monsterRowText(translator, client.GameData, monster), '\n')
+			})
+		}
+
+		if (insert.length) {
+			await client.query.insertQuery('monsters', insert)
+		}
+		for (const row of updates) {
+			await client.query.updateQuery('monsters', row, { uid: row.uid })
+		}
+
+		// const result = await client.query.insertOrUpdateQuery('monsters', insert)
+		reaction = insert.length ? '✅' : reaction
+		await msg.reply(message)
 		await msg.react(reaction)
+
+		client.log.info(`${logReference} ${target.name} started tracking monsters: ${monsters.map((m) => m.name).join(', ')}`)
 	} catch (err) {
-		client.log.error('Track command unhappy:', err)
+		client.log.error(`${logReference} Track command unhappy:`, err)
+		msg.reply(`There was a problem making these changes, the administrator can find the details with reference ${logReference}`)
 	}
 }

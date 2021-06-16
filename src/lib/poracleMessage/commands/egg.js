@@ -1,15 +1,33 @@
-exports.run = async (client, msg, args) => {
+const helpCommand = require('./help.js')
+const trackedCommand = require('./tracked.js')
+const objectDiff = require('../../objectDiff')
+
+exports.run = async (client, msg, args, options) => {
+	const logReference = Math.random().toString().slice(2, 11)
+
 	try {
-		const util = client.createUtil(msg, args)
+		const util = client.createUtil(msg, options)
 
 		const {
 			canContinue, target, userHasLocation, userHasArea, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
-		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+		const commandName = __filename.slice(__dirname.length + 1, -3)
+		client.log.info(`${logReference}: ${target.name}/${target.type}-${target.id}: ${commandName} ${args}`)
+
+		if (args[0] === 'help') {
+			return helpCommand.run(client, msg, [commandName], options)
+		}
 
 		const translator = client.translatorFactory.Translator(language)
+
+		if (args.length === 0) {
+			await msg.reply(translator.translateFormat('Valid commands are e.g. `{0}egg level5`, `{0}egg remove everything`', util.prefix),
+				{ style: 'markdown' })
+			await helpCommand.provideSingleLineHelp(client, msg, util, language, target, commandName)
+			return
+		}
 
 		let reaction = '👌'
 
@@ -42,9 +60,13 @@ exports.run = async (client, msg, args) => {
 			await msg.react(translator.translate('🙅'))
 			return await msg.reply(`${translator.translate('Oops, a distance was set in command but no location is defined for your tracking - check the')} \`${util.prefix}${translator.translate('help')}\``)
 		}
-		if (distance === 0 && !userHasArea && !remove) {
+		if (distance === 0 && !userHasArea && !remove && !msg.isFromAdmin) {
 			await msg.react(translator.translate('🙅'))
 			return await msg.reply(`${translator.translate('Oops, no distance was set in command and no area is defined for your tracking - check the')} \`${util.prefix}${translator.translate('help')}\``)
+		}
+		if (distance === 0 && !userHasArea && !remove && msg.isFromAdmin) {
+			await msg.reply(`${translator.translate('Warning: Admin command detected without distance set - using default distance')} ${client.config.tracking.defaultDistance}`)
+			distance = client.config.tracking.defaultDistance
 		}
 
 		if (!levels.length) {
@@ -64,10 +86,63 @@ exports.run = async (client, msg, args) => {
 				level: lvl,
 			}))
 
-			const result = await client.query.insertOrUpdateQuery('egg', insert)
-			client.log.info(`${target.name} started tracking level ${levels.join(', ')} eggs`)
+			const tracked = await client.query.selectAllQuery('egg', { id: target.id, profile_no: currentProfileNo })
+			const updates = []
+			const alreadyPresent = []
 
-			reaction = result.length || client.config.database.client === 'sqlite' ? '✅' : reaction
+			for (let i = insert.length - 1; i >= 0; i--) {
+				const toInsert = insert[i]
+
+				for (const existing of tracked.filter((x) => x.level == toInsert.level)) {
+					const differences = objectDiff.diff(existing, toInsert)
+
+					switch (Object.keys(differences).length) {
+						case 1:		// No differences (only UID)
+							// No need to insert
+							alreadyPresent.push(toInsert)
+							insert.splice(i, 1)
+							break
+						case 2:		// One difference (something + uid)
+							if (Object.keys(differences).some((x) => ['distance', 'template', 'clean'].includes(x))) {
+								updates.push({
+									...toInsert,
+									uid: existing.uid,
+								})
+								insert.splice(i, 1)
+							}
+							break
+						default:	// more differences
+							break
+					}
+				}
+			}
+
+			let message = ''
+
+			if ((alreadyPresent.length + updates.length + insert.length) > 50) {
+				message = translator.translateFormat('I have made a lot of changes. See {0}{1} for details', util.prefix, translator.translate('tracked'))
+			} else {
+				alreadyPresent.forEach((egg) => {
+					message = message.concat(translator.translate('Unchanged: '), trackedCommand.eggRowText(translator, client.GameData, egg), '\n')
+				})
+				updates.forEach((egg) => {
+					message = message.concat(translator.translate('Updated: '), trackedCommand.eggRowText(translator, client.GameData, egg), '\n')
+				})
+				insert.forEach((egg) => {
+					message = message.concat(translator.translate('New: '), trackedCommand.eggRowText(translator, client.GameData, egg), '\n')
+				})
+			}
+
+			if (insert.length) {
+				await client.query.insertQuery('egg', insert)
+			}
+			for (const row of updates) {
+				await client.query.updateQuery('egg', row, { uid: row.uid })
+			}
+
+			client.log.info(`${logReference}: ${target.name} started tracking level ${levels.join(', ')} eggs`)
+			await msg.reply(message)
+			reaction = insert.length ? '✅' : reaction
 		} else {
 			let result = 0
 			if (levels.length) {
@@ -75,7 +150,7 @@ exports.run = async (client, msg, args) => {
 					id: target.id,
 					profile_no: currentProfileNo,
 				}, levels, 'level')
-				client.log.info(`${target.name} stopped tracking level ${levels.join(', ')} eggs`)
+				client.log.info(`${logReference}: ${target.name} stopped tracking level ${levels.join(', ')} eggs`)
 				result += lvlResult
 			}
 			if (commandEverything) {
@@ -83,14 +158,24 @@ exports.run = async (client, msg, args) => {
 					id: target.id,
 					profile_no: currentProfileNo,
 				})
-				client.log.info(`${target.name} stopped tracking all eggs`)
+				client.log.info(`${logReference}: ${target.name} stopped tracking all eggs`)
 				result += everythingResult
 			}
-			reaction = result.length || client.config.database.client === 'sqlite' ? '✅' : reaction
+			msg.reply(
+				''.concat(
+					result == 1 ? translator.translate('I removed 1 entry')
+						: translator.translateFormat('I removed {0} entries', result),
+					', ',
+					translator.translateFormat('use `{0}{1}` to see what you are currently tracking', util.prefix, translator.translate('tracked')),
+				),
+				{ style: 'markdown' },
+			)
+			reaction = result || client.config.database.client === 'sqlite' ? '✅' : reaction
 		}
 
 		await msg.react(reaction)
 	} catch (err) {
-		client.log.error('egg command unhappy:', err)
+		client.log.error(`${logReference}: egg command unhappy:`, err)
+		msg.reply(`There was a problem making these changes, the administrator can find the details with reference ${logReference}`)
 	}
 }

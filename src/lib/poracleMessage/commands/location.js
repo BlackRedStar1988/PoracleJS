@@ -1,22 +1,36 @@
-exports.run = async (client, msg, args) => {
+const helpCommand = require('./help.js')
+
+exports.run = async (client, msg, args, options) => {
 	try {
 		// Check target
-		const util = client.createUtil(msg, args)
+		const util = client.createUtil(msg, options)
 
 		const {
 			canContinue, target, language, currentProfileNo,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
-		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+		const commandName = __filename.slice(__dirname.length + 1, -3)
+		client.log.info(`${target.name}/${target.type}-${target.id}: ${commandName} ${args}`)
+
+		if (args[0] === 'help') {
+			return helpCommand.run(client, msg, [commandName], options)
+		}
 
 		const translator = client.translatorFactory.Translator(language)
+
+		if (args.length === 0) {
+			await msg.reply(translator.translateFormat('Valid commands are e.g. `{0}location <lat>,<lon>`, `{0}location <your address>`', util.prefix),
+				{ style: 'markdown' })
+			await helpCommand.provideSingleLineHelp(client, msg, util, language, target, commandName)
+			return
+		}
 
 		let platform = target.type.split(':')[0]
 		if (platform === 'webhook') platform = 'discord'
 
 		// Remove arguments that we don't want to keep for area processing
-		for (let i = 0; i < args.length; i++) {
+		for (let i = args.length - 1; i >= 0; i--) {
 			if (args[i].match(client.re.nameRe)) args.splice(i, 1)
 			else if (args[i].match(client.re.channelRe)) args.splice(i, 1)
 			else if (args[i].match(client.re.userRe)) args.splice(i, 1)
@@ -46,6 +60,20 @@ exports.run = async (client, msg, args) => {
 			lat = locations[0].latitude
 			lon = locations[0].longitude
 			placeConfirmation = locations[0].city ? ` **${locations[0].city} - ${locations[0].country}** ` : ` **${locations[0].country}** `
+		}
+
+		if (client.config.areaSecurity.enabled && !msg.isFromAdmin) {
+			const human = await client.query.selectOneQuery('humans', { id: target.id })
+			if (human.area_restriction) {
+				const allowedFences = JSON.parse(human.area_restriction)
+				const areas = client.query.pointInArea([lat, lon])
+
+				if (!allowedFences.some((x) => areas.includes(x))) {
+					await msg.reply(translator.translate('This location is not your permitted area'))
+					await msg.react('🙅')
+					return
+				}
+			}
 		}
 
 		const maplink = `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`

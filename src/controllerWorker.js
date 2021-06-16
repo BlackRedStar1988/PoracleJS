@@ -1,4 +1,5 @@
 const { parentPort, workerData, isMainThread } = require('worker_threads')
+const { writeHeapSnapshot } = require('v8')
 // eslint-disable-next-line no-underscore-dangle
 require('events').EventEmitter.prototype._maxListeners = 100
 const NodeCache = require('node-cache')
@@ -11,6 +12,7 @@ const { Config } = require('./lib/configFetcher')
 const mustache = require('./lib/handlebars')()
 
 const { workerId } = workerData
+logs.setWorkerId(workerId)
 
 const {
 	config, knex, dts, geofence, translatorFactory,
@@ -29,7 +31,10 @@ const RaidController = require('./controllers/raid')
 const QuestController = require('./controllers/quest')
 const PokestopController = require('./controllers/pokestop')
 const PokestopLureController = require('./controllers/pokestop_lure')
+const NestController = require('./controllers/nest')
 const ControllerWeatherManager = require('./controllers/weatherData')
+const StatsData = require('./controllers/statsData')
+
 /**
  * Contains currently rate limited users
  * @type {NodeCache}
@@ -37,12 +42,14 @@ const ControllerWeatherManager = require('./controllers/weatherData')
 const rateLimitedUserCache = new NodeCache({ stdTTL: config.alertLimits.timingPeriod })
 
 const controllerWeatherManager = new ControllerWeatherManager(config, log)
+const statsData = new StatsData(config, log)
 
-const monsterController = new MonsterController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager)
-const raidController = new RaidController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager)
-const questController = new QuestController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager)
-const pokestopController = new PokestopController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager)
-const pokestopLureController = new PokestopLureController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager)
+const monsterController = new MonsterController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager, statsData)
+const raidController = new RaidController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager, statsData)
+const questController = new QuestController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager, statsData)
+const pokestopController = new PokestopController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager, statsData)
+const nestController = new NestController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager, statsData)
+const pokestopLureController = new PokestopLureController(logs.controller, knex, config, dts, geofence, GameData, rateLimitedUserCache, translatorFactory, mustache, controllerWeatherManager, statsData)
 
 const hookQueue = []
 let queuePort
@@ -102,6 +109,15 @@ async function processOne(hook) {
 				}
 				break
 			}
+			case 'nest': {
+				const result = await nestController.handle(hook.message)
+				if (result) {
+					queueAddition = result
+				} else {
+					log.error(`Worker ${workerId}: Missing result from ${hook.type} processor`, { data: hook.message })
+				}
+				break
+			}
 			default:
 				log.error(`Worker ${workerId}: Unexpected hook type  ${hook.type} in general controller worker process`, { data: hook.message })
 		}
@@ -123,7 +139,11 @@ const alarmProcessor = new PromiseQueue(hookQueue, config.tuning.concurrentWebho
 function receiveQueue(msg) {
 	try {
 		hookQueue.push(msg)
-		alarmProcessor.run(processOne)
+		alarmProcessor.run(processOne, async (err) => {
+			// eslint-disable-next-line no-console
+			console.error(err)
+			log.error(`Worker ${workerId}: alarmProcessor exception`, err)
+		})
 	} catch (err) {
 		log.error(`Worker ${workerId}: receiveCommand failed to add new queue entry`, err)
 	}
@@ -140,6 +160,11 @@ function receiveCommand(cmd) {
 	try {
 		log.debug(`Worker ${workerId}: receiveCommand ${cmd.type}`)
 
+		if (cmd.type == 'heapdump') {
+			writeHeapSnapshot()
+			return
+		}
+
 		if (cmd.type == 'badguys') {
 			log.debug(`Worker ${workerId}: Received badguys`, cmd.badguys)
 
@@ -149,6 +174,11 @@ function receiveCommand(cmd) {
 			log.debug(`Worker ${workerId}: Received weather broadcast`, cmd.data)
 
 			controllerWeatherManager.receiveWeatherBroadcast(cmd.data)
+		}
+		if (cmd.type == 'statsBroadcast') {
+			log.debug(`Worker ${workerId}: Received stats broadcast`, cmd.data)
+
+			statsData.receiveStatsBroadcast(cmd.data)
 		}
 	} catch (err) {
 		log.error(`Worker ${workerId}: receiveCommand failed to processs command`, err)
@@ -170,6 +200,20 @@ async function currentStatus() {
 }
 
 if (!isMainThread) {
+	process.on('unhandledRejection', (reason) => {
+		// eslint-disable-next-line no-console
+		console.error(`Worker ${workerId} Unhandled Rejection at: ${reason.stack || reason}`)
+
+		log.error(`Unhandled Rejection at: ${reason.stack || reason}`)
+	})
+
+	process.on('uncaughtException', (err) => {
+		// eslint-disable-next-line no-console
+		console.error(`Worker ${workerId} Unhandled Rejection at: ${err.stack || err}`)
+
+		log.error(err)
+	})
+
 	parentPort.on('message', (msg) => {
 		if (msg.type == 'queuePort') {
 			queuePort = msg.queuePort

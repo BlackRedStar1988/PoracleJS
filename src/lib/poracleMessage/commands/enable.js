@@ -1,17 +1,18 @@
-exports.run = async (client, msg, args) => {
+exports.run = async (client, msg, args, options) => {
 	try {
 		if (!msg.isFromAdmin) {
 			return await msg.react('🙅')
 		}
 
 		// Check target
-		const util = client.createUtil(msg, args)
+		const util = client.createUtil(msg, options)
 
 		const {
-			canContinue,
+			canContinue, target,
 		} = await util.buildTarget(args)
 
 		if (!canContinue) return
+		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
 
 		// Make list of ids
 		const mentions = msg.getMentions()
@@ -21,7 +22,7 @@ exports.run = async (client, msg, args) => {
 		for (const id of targets) {
 			client.log.info(`Enable ${id}`)
 
-			await client.query.updateQuery('humans', { admin_disable: 0 }, { id })
+			await client.query.updateQuery('humans', { admin_disable: 0, disabled_date: null }, { id })
 		}
 		await msg.react('✅')
 	} catch (err) {

@@ -63,7 +63,7 @@ class Weather extends Controller {
 	}
 
 	// eslint-disable-next-line class-methods-use-this
-	async mapPoGoWeather(weatherIcon) {
+	mapPoGoWeather(weatherIcon) {
 		const mapping = {
 			1: [1, 2, 30, 33, 34],
 			2: [12, 15, 18, 26, 29],
@@ -184,16 +184,22 @@ class Weather extends Controller {
 						const url = `https://dataservice.accuweather.com/forecasts/v1/hourly/12hour/${data.location}?apikey=${apiKeyWeatherInfo}`
 						this.log.debug(`${id}: Fetching AccuWeather Forecast ${url}`)
 
+						let logString = ''
 						const weatherInfo = await axios.get(url)
 						for (const forecast in Object.entries(weatherInfo.data)) {
 							if (weatherInfo.data[forecast].EpochDateTime > currentHourTimestamp) {
-								data[weatherInfo.data[forecast].EpochDateTime] = await this.mapPoGoWeather(weatherInfo.data[forecast].WeatherIcon)
+								const pogoWeather = this.mapPoGoWeather(weatherInfo.data[forecast].WeatherIcon)
+								const epoch = weatherInfo.data[forecast].EpochDateTime
+								data[epoch] = pogoWeather
+								logString = logString.concat(`${moment.unix(epoch).format('HH:mm')} = ${pogoWeather} `)
 							}
 						}
+						this.log.verbose(`${id}: Accuweather forecast [GMT] ${logString}`)
+
 						data.forecastTimeout = forecastTimeout
 						data.lastCurrentWeatherCheck = currentHourTimestamp
 					} catch (err) {
-						this.log.error(`${id}: Fetching AccuWeather weather info errored with: ${err}`)
+						this.log.error(`${id}: Fetching AccuWeather weather info [${apiKeyWeatherInfo.substring(0, 5)}...] errored with: ${err}`)
 					}
 				} else {
 					this.log.warn(`${id}: Couldn't fetch weather forecast - no API key available`)
@@ -310,11 +316,11 @@ class Weather extends Controller {
 			}
 
 			if (previousWeather === data.condition || whoCares.length === 0) {
-				this.log.verbose(`${data.s2_cell_id}: weather has not changed or nobody cares.`)
+				this.log.verbose(`${data.s2_cell_id}: weather of ${data.condition}${data.source == 'fromMonster' ? ' triggered from Monster' : ''} has not changed or nobody cares.`)
 				return []
 			}
 
-			this.log.info(`${data.s2_cell_id}: weather has changed to ${data.condition} and someone might care`)
+			this.log.info(`${data.s2_cell_id}: weather${data.source == 'fromMonster' ? ' triggered from Monster' : ''} has changed to ${data.condition} from ${previousWeather} and someone might care`)
 
 			if (data.source == 'fromMonster') {
 				const s2cell = new S2ts.S2Cell(new S2ts.S2CellId(data.s2_cell_id))
@@ -332,7 +338,6 @@ class Weather extends Controller {
 
 			if (pregenerateTile && this.config.geocoding.staticMapType.weather && !this.config.weather.showAlteredPokemonStaticMap) {
 				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL(logReference, 'weather', data, this.config.geocoding.staticMapType.weather)
-				this.log.debug(`${logReference}: Tile generated ${data.staticMap}`)
 			}
 
 			data.oldWeatherId = (previousWeather > -1) ? previousWeather : ''
@@ -384,7 +389,6 @@ class Weather extends Controller {
 				}
 				if (pregenerateTile && this.config.geocoding.staticMapType.weather && this.config.weather.showAlteredPokemon && this.config.weather.showAlteredPokemonStaticMap) {
 					data.staticMap = await this.tileserverPregen.getPregeneratedTileURL(logReference, 'weather', data, this.config.geocoding.staticMapType.weather)
-					this.log.debug(`${logReference}: Tile generated ${data.staticMap}`)
 				}
 				data.staticmap = data.staticMap // deprecated
 				if (cares.caresUntil) weatherTth = moment.preciseDiff(now, cares.caresUntil * 1000, true)
@@ -420,7 +424,23 @@ class Weather extends Controller {
 
 				const mustache = this.getDts(logReference, 'weatherchange', platform, cares.template, language)
 				if (mustache) {
-					const message = JSON.parse(mustache(view, { data: { language } }))
+					let mustacheResult
+					let message
+					try {
+						mustacheResult = mustache(view, { data: { language } })
+					} catch (err) {
+						this.log.error(`${logReference}: Error generating mustache results for ${platform}/${cares.template}/${language}`, err, view)
+						// eslint-disable-next-line no-continue
+						continue
+					}
+					mustacheResult = await this.urlShorten(mustacheResult)
+					try {
+						message = JSON.parse(mustacheResult)
+					} catch (err) {
+						this.log.error(`${logReference}: Error JSON parsing mustache results ${mustacheResult}`, err)
+						// eslint-disable-next-line no-continue
+						continue
+					}
 
 					const work = {
 						lat: data.latitude.toString().substring(0, 8),

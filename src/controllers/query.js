@@ -1,13 +1,15 @@
+const inside = require('point-in-polygon')
 const NodeGeocoder = require('node-geocoder')
 const cp = require('child_process')
 const TileserverPregen = require('../lib/tileserverPregen')
 
 class Query {
-	constructor(log, db, config) {
+	constructor(log, db, config, geofence) {
 		this.db = db
 		this.config = config
 		this.log = log
 		this.cp = cp
+		this.geofence = geofence
 		this.tileserverPregen = new TileserverPregen(config, log)
 	}
 
@@ -57,6 +59,16 @@ class Query {
 		}
 	}
 
+	pointInArea(point) {
+		if (!this.geofence.length) return []
+		const matchAreas = []
+
+		for (const areaObj of this.geofence) {
+			if (inside(point, areaObj.path)) matchAreas.push(areaObj.name.toLowerCase())
+		}
+		return matchAreas
+	}
+
 	// generic exec method
 
 	execPromise(command) {
@@ -72,6 +84,14 @@ class Query {
 	}
 
 	// database methods below
+
+	/**
+	 * Gets current date time in a format acceptable to the database
+	 * @returns {string}
+	 */
+	dbNow() {
+		return this.db.fn.now()
+	}
 
 	async selectOneQuery(table, conditions) {
 		try {
@@ -140,10 +160,24 @@ class Query {
 				return this.returnByDatabaseType(await this.db.raw(query))
 			}
 			case 'mysql': {
-				const firstData = values[0] ? values[0] : values
-				const query = `${this.db(table).insert(values).toQuery()} ON DUPLICATE KEY UPDATE ${
-					Object.keys(firstData).map((field) => `\`${field}\`=VALUES(\`${field}\`)`).join(', ')}`
-				return this.returnByDatabaseType(await this.db.raw(query))
+				let rows = values
+				if (!Array.isArray(rows)) rows = [values]
+
+				let rowsAffected = []
+				for (const row of rows) {
+					const exists = await this.db.select().from(table).where(row).count()
+
+					if (!Object.values(exists[0])[0]) {
+						const res = await this.db(table).insert(row)
+						rowsAffected += res[0]
+					}
+				}
+
+				return rowsAffected
+				// const firstData = values[0] ? values[0] : values
+				// const query = `${this.db(table).insert(values).toQuery()} ON DUPLICATE KEY UPDATE ${
+				// 	Object.keys(firstData).map((field) => `\`${field}\`=VALUES(\`${field}\`)`).join(', ')}`
+				// return this.returnByDatabaseType(await this.db.raw(query))
 			}
 			default: {
 				const constraints = {

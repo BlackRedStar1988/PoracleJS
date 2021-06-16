@@ -1,7 +1,7 @@
-exports.run = async (client, msg, args) => {
+exports.run = async (client, msg, args, options) => {
 	try {
 		// Check target
-		const util = client.createUtil(msg, args)
+		const util = client.createUtil(msg, options)
 
 		const {
 			canContinue, target, language,
@@ -9,6 +9,10 @@ exports.run = async (client, msg, args) => {
 
 		if (!canContinue) return
 		client.log.info(`${target.name}/${target.type}-${target.id}: ${__filename.slice(__dirname.length + 1, -3)} ${args}`)
+
+		if (args[0] === 'help') {
+			return require('./help.js').run(client, msg, [__filename.slice(__dirname.length + 1, -3)], options)
+		}
 
 		const translator = client.translatorFactory.Translator(language)
 

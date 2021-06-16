@@ -1,7 +1,5 @@
 const geoTz = require('geo-tz')
 const moment = require('moment-timezone')
-const replaceAsync = require('../util/stringReplaceAsync')
-const urlShortener = require('../lib/urlShortener')
 const Controller = require('./controller')
 require('moment-precise-range-plugin')
 
@@ -14,10 +12,18 @@ class Monster extends Controller {
 	}
 
 	async monsterWhoCares(data) {
-		let areastring = `humans.area like '%"${data.matched[0] || 'doesntexist'}"%' `
+		let areastring = '1 = 0 '// `humans.area like '%"${data.matched[0] || 'doesntexist'}"%' `
 		data.matched.forEach((area) => {
 			areastring = areastring.concat(`or humans.area like '%"${area}"%' `)
 		})
+		let strictareastring = ''
+		if (this.config.areaSecurity.enabled && this.config.areaSecurity.strictLocations) {
+			strictareastring = 'and (humans.area_restriction IS NULL OR (1 = 0 '
+			data.matched.forEach((area) => {
+				strictareastring = strictareastring.concat(`or humans.area_restriction like '%"${area}"%' `)
+			})
+			strictareastring = strictareastring.concat('))')
+		}
 		let pokemonQueryString = `(pokemon_id=${data.pokemon_id} or pokemon_id=0) and (form = 0 or form = ${data.form})`
 		if (data.pvpEvoLookup) pokemonQueryString = `(pokemon_id=${data.pvpPokemonId} and (form = 0 or form = ${data.pvpFormId}) and (great_league_ranking < 4096 or ultra_league_ranking < 4096 or great_league_ranking_min_cp > 0 or ultra_league_ranking_min_cp > 0))`
 		let pvpQueryString = `great_league_ranking>=${data.bestGreatLeagueRank} and great_league_ranking_min_cp<=${data.bestGreatLeagueRankCP} and ultra_league_ranking>=${data.bestUltraLeagueRank} and ultra_league_ranking_min_cp<=${data.bestUltraLeagueRankCP}`
@@ -41,25 +47,30 @@ class Monster extends Controller {
 		max_atk>=${data.atk} and
 		max_def>=${data.def} and
 		max_sta>=${data.sta} and
-		min_weight<=${data.weight} * 1000 and
-		max_weight>=${data.weight} * 1000 and
+		min_weight<=${data.weight * 1000} and
+		max_weight>=${data.weight * 1000} and
+		rarity<=${data.rarityGroup} and
+		max_rarity>=${data.rarityGroup} and
 		(${pvpQueryString})
+		${strictareastring}
 		`
 
 		if (['pg', 'mysql'].includes(this.config.database.client)) {
 			query = query.concat(`
 				and
 				(
-					(
+					(	
+						monsters.distance != 0 and
 						round(
-							6371000
-							* acos(cos( radians(${data.latitude}) )
-							* cos( radians( humans.latitude ) )
-							* cos( radians( humans.longitude ) - radians(${data.longitude}) )
-							+ sin( radians(${data.latitude}) )
-							* sin( radians( humans.latitude ) )
-						)
-					) < monsters.distance and monsters.distance != 0)
+							6371000	* acos(
+								cos( radians(${data.latitude}) )
+								* cos( radians( humans.latitude ) )
+								* cos( radians( humans.longitude ) - radians(${data.longitude}) )
+								+ sin( radians(${data.latitude}) )
+								* sin( radians( humans.latitude ) )
+							)
+						) < monsters.distance
+					)
 					or
 					(
 						monsters.distance = 0 and (${areastring})
@@ -146,8 +157,11 @@ class Monster extends Controller {
 				|| !(['string', 'number'].includes(typeof data.individual_defense) && (+data.individual_defense + 1))
 				|| !(['string', 'number'].includes(typeof data.individual_stamina) && (+data.individual_stamina + 1)))
 
+			if (data.fort_name) data.fort_name = this.escapeJsonString(data.fort_name)
 			data.pokemonId = data.pokemon_id
 			data.encounterId = data.encounter_id
+			// eslint-disable-next-line prefer-destructuring
+			data.generation = Object.entries(this.GameData.utilData.genData).find(([, genData]) => data.pokemonId >= genData.min && data.pokemonId <= genData.max)[0]
 			data.nameEng = monster.name
 			data.formNameEng = monster.form.name
 			data.formId = data.form
@@ -168,8 +182,8 @@ class Monster extends Controller {
 			data.chargeMoveId = encountered ? data.move_2 : 0
 			data.quickMoveNameEng = encountered && this.GameData.moves[data.quickMoveId] ? this.GameData.moves[data.quickMoveId].name : ''
 			data.chargeMoveNameEng = encountered && this.GameData.moves[data.chargeMoveId] ? this.GameData.moves[data.chargeMoveId].name : ''
-			data.height = encountered ? data.height.toFixed(2) : 0
-			data.weight = encountered ? data.weight.toFixed(2) : 0
+			data.height = encountered && data.height ? data.height.toFixed(2) : 0
+			data.weight = encountered && data.weight ? data.weight.toFixed(2) : 0
 			data.genderDataEng = this.GameData.utilData.genders[data.gender]
 			if (data.boosted_weather) data.weather = data.boosted_weather
 			if (!data.weather) data.weather = 0
@@ -197,6 +211,8 @@ class Monster extends Controller {
 			data.stickerUrl = `${this.config.general.stickerUrl}pokemon_icon_${data.pokemon_id.toString().padStart(3, '0')}_${data.form ? data.form.toString() : '00'}.webp`
 			data.types = this.getPokemonTypes(data.pokemon_id, data.form)
 			data.alteringWeathers = this.getAlteringWeathers(data.types, data.weather)
+			data.rarityGroup = Object.keys(this.statsData.rarityGroups).find((x) => this.statsData.rarityGroups[x].includes(data.pokemonId)) || -1
+			data.rarityNameEng = this.GameData.utilData.rarity[data.rarityGroup] ? this.GameData.utilData.rarity[data.rarityGroup] : ''
 			data.pvpPokemonId = data.pokemon_id
 			data.pvpFormId = data.form
 			data.pvpEvolutionData = {}
@@ -279,7 +295,7 @@ class Monster extends Controller {
 				return []
 			}
 
-			data.matched = await this.pointInArea([data.latitude, data.longitude])
+			data.matched = this.pointInArea([data.latitude, data.longitude])
 
 			data.pvpEvoLookup = 0
 			const whoCares = await this.monsterWhoCares(data)
@@ -338,7 +354,6 @@ class Monster extends Controller {
 
 			if (pregenerateTile && this.config.geocoding.staticMapType.pokemon) {
 				data.staticMap = await this.tileserverPregen.getPregeneratedTileURL(logReference, 'monster', data, this.config.geocoding.staticMapType.pokemon)
-				this.log.debug(`${logReference}: Tile generated ${data.staticMap}`)
 			}
 			data.staticmap = data.staticMap // deprecated
 
@@ -349,10 +364,13 @@ class Monster extends Controller {
 				const weatherForecast = await this.weatherData.getWeatherForecast(weatherCellId)
 
 				let pokemonShouldBeBoosted = false
-				if (weatherForecast.current > 0 && this.GameData.utilData.weatherTypeBoost[weatherForecast.current].filter((boostedType) => data.types.includes(boostedType)).length > 0) pokemonShouldBeBoosted = true
+				let pokemonWillBeBoosted = false
+				const currentBoostedTypes = weatherForecast.current ? this.GameData.utilData.weatherTypeBoost[weatherForecast.current] : []
+				const forecastBoostedTypes = weatherForecast.next ? this.GameData.utilData.weatherTypeBoost[weatherForecast.next] : []
+				if (weatherForecast.current > 0 && currentBoostedTypes.filter((boostedType) => data.types.includes(boostedType)).length > 0) pokemonShouldBeBoosted = true
 				if (weatherForecast.next > 0 && ((data.weather > 0 && weatherForecast.next !== data.weather) || (weatherForecast.current > 0 && weatherForecast.next !== weatherForecast.current) || (pokemonShouldBeBoosted && data.weather == 0))) {
 					const weatherChangeTime = moment((data.disappear_time - (data.disappear_time % 3600)) * 1000).tz(geoTz(data.latitude, data.longitude).toString()).format(this.config.locale.time).slice(0, -3)
-					const pokemonWillBeBoosted = this.GameData.utilData.weatherTypeBoost[weatherForecast.next].filter((boostedType) => data.types.includes(boostedType)).length > 0 ? 1 : 0
+					pokemonWillBeBoosted = forecastBoostedTypes.filter((boostedType) => data.types.includes(boostedType)).length > 0 ? 1 : 0
 					if (data.weather > 0 && !pokemonWillBeBoosted || data.weather == 0 && pokemonWillBeBoosted) {
 						weatherForecast.current = data.weather > 0 ? data.weather : weatherForecast.current
 						if (pokemonShouldBeBoosted && data.weather == 0) {
@@ -364,6 +382,7 @@ class Monster extends Controller {
 						data.weatherNext = weatherForecast.next
 					}
 				}
+				this.log.debug(`${logReference}: Pokemon ${data.pokemon_id} cell: ${weatherCellId} types ${JSON.stringify(data.types)} weather ${data.weather} Forecast ${weatherForecast.current} [boosted ${pokemonShouldBeBoosted} ${JSON.stringify(currentBoostedTypes)}] next ${weatherForecast.next} [boosted ${pokemonWillBeBoosted} ${JSON.stringify(forecastBoostedTypes)}]`)
 			}
 
 			for (const cares of whoCares) {
@@ -418,6 +437,7 @@ class Monster extends Controller {
 					name: translator.translate(data.genderDataEng.name),
 					emoji: translator.translate(data.genderDataEng.emoji),
 				}
+				data.rarityName = translator.translate(data.rarityNameEng)
 				data.quickMoveName = data.weight && this.GameData.moves[data.quickMoveId] ? translator.translate(this.GameData.moves[data.quickMoveId].name) : ''
 				data.quickMoveEmoji = this.GameData.moves[data.quickMoveId] && this.GameData.utilData.types[this.GameData.moves[data.quickMoveId].type] ? translator.translate(this.GameData.utilData.types[this.GameData.moves[data.quickMoveId].type].emoji) : ''
 				data.chargeMoveName = data.weight && this.GameData.moves[data.chargeMoveId] ? translator.translate(this.GameData.moves[data.chargeMoveId].name) : ''
@@ -453,10 +473,14 @@ class Monster extends Controller {
 				}
 
 				const e = []
+				const n = []
 				monster.types.forEach((type) => {
 					e.push(translator.translate(this.GameData.utilData.types[type.name].emoji))
+					n.push(type.name)
 				})
 				data.emoji = e
+				data.typeNameEng = n
+				data.typeName = data.typeNameEng.map((type) => translator.translate(type)).join(', ')
 				data.emojiString = e.join('')
 
 				const view = {
@@ -469,8 +493,7 @@ class Monster extends Controller {
 					tthm: data.tth.minutes,
 					tths: data.tth.seconds,
 					now: new Date(),
-					greatleagueranking: cares.great_league_ranking === 4096 ? 0 : cares.great_league_ranking,
-					ultraleagueranking: cares.ultra_league_ranking === 4096 ? 0 : cares.ultra_league_ranking,
+					pvpUserRanking: Math.min(cares.great_league_ranking, cares.ultra_league_ranking) === 4096 ? 0 : Math.min(cares.great_league_ranking, cares.ultra_league_ranking),
 					areas: data.matched.map((area) => area.replace(/'/gi, '').replace(/ /gi, '-')).join(', '),
 					pvpDisplayMaxRank: this.config.pvp.pvpDisplayMaxRank,
 					pvpDisplayGreatMinCP: this.config.pvp.pvpDisplayGreatMinCP,
@@ -491,10 +514,7 @@ class Monster extends Controller {
 						// eslint-disable-next-line no-continue
 						continue
 					}
-
-					mustacheResult = await replaceAsync(mustacheResult, /<S<(.*?)>S>/g,
-						async (match, name) => urlShortener(name))
-
+					mustacheResult = await this.urlShorten(mustacheResult)
 					try {
 						message = JSON.parse(mustacheResult)
 					} catch (err) {

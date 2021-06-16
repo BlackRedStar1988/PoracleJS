@@ -11,6 +11,11 @@ class PoracleDiscordMessage {
 		this.command = msg.content.split(' ')[0].substring(1)
 	}
 
+	// eslint-disable-next-line class-methods-use-this
+	convertSafe(message) {
+		return message.replace(/[_*[`]/g, ((m) => `\\${m}`))
+	}
+
 	getPings() {
 		return [this.msg.mentions.users.array().map((u) => `<@!${u.id}>`), this.msg.mentions.roles.array().map((r) => `<@&${r.id}>`)].join('')
 	}
@@ -32,13 +37,39 @@ class PoracleDiscordMessage {
 	}
 
 	async reply(message) {
+		if (this.msg.channel.type === 'text') {
+			// This is a channel, do not reply but rather send to avoid @ reply
+			if (message.length > 1999) {
+				return this.msg.channel.send(message, { split: true })
+			}
+			return this.msg.channel.send(message)
+		}
 		if (message.length > 1999) {
 			return this.msg.reply(message, { split: true })
 		}
 		return this.msg.reply(message)
 	}
 
+	async replyWithImageUrl(title, message, url) {
+		const messageText = {
+			embed: {
+				color: 0x00ff00,
+				title,
+				description: message,
+				image: {
+					url,
+				},
+			},
+		}
+		await this.msg.reply(messageText)
+	}
+
 	async replyWithAttachment(message, attachment) {
+		if (this.msg.channel.type === 'text') {
+			// This is a channel, do not reply but rather send to avoid @ reply
+			return this.msg.channel.send(message, { files: [attachment] })
+		}
+
 		return this.msg.reply(message, { files: [attachment] })
 	}
 

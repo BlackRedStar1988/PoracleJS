@@ -31,6 +31,7 @@ module.exports = (translatorFactory) => ({
 	maxcpRe: createCommandRegex(translatorFactory, 'maxcp', '\\d{1,5}'),
 	maxivRe: createCommandRegex(translatorFactory, 'maxiv', '\\d{1,3}'),
 	maxweightRe: createCommandRegex(translatorFactory, 'maxweight', '\\d{1,6}'),
+	maxRarityRe: createCommandRegex(translatorFactory, 'maxrarity', '.+'),
 	maxatkRe: createCommandRegex(translatorFactory, 'maxatk', '\\d{1,2}'),
 	maxdefRe: createCommandRegex(translatorFactory, 'maxdef', '\\d{1,2}'),
 	maxstaRe: createCommandRegex(translatorFactory, 'maxsta', '\\d{1,2}'),
@@ -41,6 +42,7 @@ module.exports = (translatorFactory) => ({
 	defRe: createCommandRegex(translatorFactory, 'def', '\\d{1,2}'),
 	staRe: createCommandRegex(translatorFactory, 'sta', '\\d{1,2}'),
 	weightRe: createCommandRegex(translatorFactory, 'weight', '\\d{1,8}'),
+	rarityRe: createCommandRegex(translatorFactory, 'rarity', '.+'),
 	greatLeagueRe: createCommandRegex(translatorFactory, 'great', '\\d{1,4}'),
 	greatLeagueCPRe: createCommandRegex(translatorFactory, 'greatcp', '\\d{1,5}'),
 	ultraLeagueRe: createCommandRegex(translatorFactory, 'ultra', '\\d{1,4}'),
@@ -50,6 +52,7 @@ module.exports = (translatorFactory) => ({
 	stardustRe: createCommandRegex(translatorFactory, 'stardust', '\\d{1,8}'),
 	energyRe: createCommandRegex(translatorFactory, 'energy', '\\S+'),
 	channelRe: createCommandRegex(translatorFactory, 'channel', '\\d{1,20}'),
+	guildRe: createCommandRegex(translatorFactory, 'guild', '\\d{1,20}'),
 	areaRe: createCommandRegex(translatorFactory, 'area', '.+'),
 	languageRe: createCommandRegex(translatorFactory, 'language', '.+'),
 	monRe: createCommandRegex(translatorFactory, 'mon', '(\\d\\d?)?(:?)(\\d\\d?)?'),
@@ -61,6 +64,6 @@ module.exports = (translatorFactory) => ({
 	sunRe: createCommandRegex(translatorFactory, 'sun', '(\\d\\d?)?(:?)(\\d\\d?)?'),
 	weekdayRe: createCommandRegex(translatorFactory, 'weekday', '(\\d\\d?)?(:?)(\\d\\d?)?'),
 	weekendRe: createCommandRegex(translatorFactory, 'weekend', '(\\d\\d?)?(:?)(\\d\\d?)?'),
-
+	minspawnRe: createCommandRegex(translatorFactory, 'minspawn', '(\\d\\d?)?(:?)(\\d\\d?)?'),
 }
 )
